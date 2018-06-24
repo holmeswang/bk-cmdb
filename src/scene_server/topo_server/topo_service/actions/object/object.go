@@ -13,27 +13,27 @@
 package object
 
 import (
+	"encoding/json"
+	"fmt"
+	"io/ioutil"
+	"net/http"
+	"strconv"
+	"strings"
+
 	"configcenter/src/common"
 	"configcenter/src/common/bkbase"
 	"configcenter/src/common/blog"
 	"configcenter/src/common/core/cc/actions"
 	"configcenter/src/common/errors"
+	"configcenter/src/common/language"
 	"configcenter/src/common/util"
 	"configcenter/src/scene_server/topo_server/topo_service/manager"
-	"strings"
 
 	"github.com/rs/xid"
 
 	api "configcenter/src/source_controller/api/object"
-	"encoding/json"
 
 	"github.com/bitly/go-simplejson"
-
-	"fmt"
-	"io/ioutil"
-	"net/http"
-	"strconv"
-
 	"github.com/emicklei/go-restful"
 )
 
@@ -248,6 +248,277 @@ func (cli *objectAction) updateObjectAttribute(tmpItem *api.ObjAttDes, jsObjAttr
 	return tmpItem, nil
 }
 
+func (cli *objectAction) setObjectAttribute(forward *api.ForwardParam, ownerID, objID string, js *simplejson.Json, result map[string]interface{}, defErr errors.DefaultCCErrorIf, defLang language.DefaultCCLanguageIf) (map[string]interface{}, error) {
+
+	subResult := map[string]interface{}{}
+	conditionAtt := map[string]interface{}{}
+	jsObjAttr := js.Get(objID).Get("attr")
+	attrMap, mapErr := jsObjAttr.Map()
+	if nil != mapErr {
+		blog.Error("can not convert to map, error info is %s", mapErr.Error())
+		subResult["errors"] = defErr.Errorf(common.CCErrCommParamsLostField, "attr")
+		result[objID] = subResult
+		return result, mapErr
+	}
+
+	for keyIdx := range attrMap {
+
+		colIdx, _ := strconv.Atoi(keyIdx)
+
+		// check group name
+		propertyGroupName, err := jsObjAttr.Get(keyIdx).Get("bk_property_group_name").String()
+		jsObjAttr.Get(keyIdx).Del("bk_property_group_name")
+		if nil != err {
+			blog.Error("failed to parse the bk_property_group_name, error info is %s", err.Error())
+			errStr := defLang.Languagef("import_row_int_error_str", colIdx, defErr.Errorf(common.CCErrCommParamsNeedString, "bk_property_group_name"))
+			if failed, ok := subResult["insert_failed"]; ok {
+				failedArr := failed.([]string)
+				failedArr = append(failedArr, errStr)
+				subResult["insert_failed"] = failedArr
+			} else {
+				subResult["insert_failed"] = []string{
+					errStr,
+				}
+			}
+			result[objID] = subResult
+			continue
+		}
+
+		// check group name
+		if 0 == len(propertyGroupName) {
+			jsObjAttr.Get(keyIdx).Set("bk_property_group", "default") // set default, if set nothing
+		} else {
+			data := map[string]interface{}{
+				common.BKOwnerIDField: ownerID,
+				common.BKObjIDField:   objID,
+				"bk_group_name":       propertyGroupName,
+			}
+			dataStr, _ := json.Marshal(data)
+			grps, err := cli.mgr.SelectPropertyGroupByObjectID(forward, ownerID, objID, dataStr, defErr)
+			if nil != err {
+				blog.Error("failed to search the group, error info is %s", err.Error())
+				errStr := defLang.Languagef("import_row_int_error_str", colIdx, defErr.Errorf(common.CCErrCommParamsNeedString, "bk_property_group_name"))
+				if failed, ok := subResult["insert_failed"]; ok {
+					failedArr := failed.([]string)
+					failedArr = append(failedArr, errStr)
+					subResult["insert_failed"] = failedArr
+				} else {
+					subResult["insert_failed"] = []string{
+						errStr,
+					}
+				}
+				result[objID] = subResult
+				continue
+			}
+
+			if 0 != len(grps) {
+				jsObjAttr.Get(keyIdx).Set("bk_property_group", grps[0].GroupID) // only one group, not any more
+			} else {
+				grp := api.ObjAttGroupDes{}
+				grp.ObjectID = objID
+				grp.OwnerID = ownerID
+				grp.GroupID = xid.New().String()
+				grp.GroupName = propertyGroupName
+				grpStr, _ := json.Marshal(grp)
+				if _, err := cli.mgr.CreateObjectGroup(forward, grpStr, defErr); nil != err {
+					blog.Error("failed to create the group, error info is %s", err.Error())
+					errStr := defLang.Languagef("import_row_int_error_str", colIdx, defErr.Error(common.CCErrTopoObjectGroupCreateFailed))
+					if failed, ok := subResult["insert_failed"]; ok {
+						failedArr := failed.([]string)
+						failedArr = append(failedArr, errStr)
+						subResult["insert_failed"] = failedArr
+					} else {
+						subResult["insert_failed"] = []string{
+							errStr,
+						}
+					}
+					result[objID] = subResult
+					continue
+				}
+
+				jsObjAttr.Get(keyIdx).Set("bk_property_group", grp.GroupID) // only one group, not any more
+			}
+
+		}
+
+		// check base attribute
+		propertyID, err := jsObjAttr.Get(keyIdx).Get("bk_property_id").String()
+		if 0 == len(propertyID) {
+			blog.Error("not set the bk_property_id")
+			errStr := defLang.Languagef("import_row_int_error_str", colIdx, defErr.Errorf(common.CCErrCommParamsNeedSet, "bk_property_id"))
+			if failed, ok := subResult["insert_failed"]; ok {
+				failedArr := failed.([]string)
+				failedArr = append(failedArr, errStr)
+				subResult["insert_failed"] = failedArr
+			} else {
+				subResult["insert_failed"] = []string{
+					errStr,
+				}
+			}
+			result[objID] = subResult
+			continue
+		}
+		if nil != err {
+			blog.Error("failed to parse the bk_property_id, error info is %s", err.Error())
+			errStr := defLang.Languagef("import_row_int_error_str", colIdx, defErr.Errorf(common.CCErrCommParamsNeedString, "bk_property_id"))
+			if failed, ok := subResult["insert_failed"]; ok {
+				failedArr := failed.([]string)
+				failedArr = append(failedArr, errStr)
+				subResult["insert_failed"] = failedArr
+			} else {
+				subResult["insert_failed"] = []string{
+					errStr,
+				}
+			}
+			result[objID] = subResult
+			continue
+		}
+
+		// check the property id
+		conditionAtt[common.BKOwnerIDField] = ownerID
+		conditionAtt[common.BKObjIDField] = objID
+		conditionAtt["bk_property_id"] = propertyID
+
+		conditionAttVal, _ := json.Marshal(conditionAtt)
+		if items, err := cli.mgr.SelectObjectAtt(forward, conditionAttVal, defErr); nil != err {
+			blog.Error("failed to search the object attribute, the condition is %+v, error info is %s", conditionAtt, err.Error())
+			errStr := defLang.Languagef("import_row_int_error_str", colIdx, err.Error())
+			if failed, ok := subResult["insert_failed"]; ok {
+				failedArr := failed.([]string)
+				failedArr = append(failedArr, errStr)
+				subResult["insert_failed"] = failedArr
+			} else {
+				subResult["insert_failed"] = []string{
+					errStr,
+				}
+			}
+			result[objID] = subResult
+			continue
+
+		} else if 0 != len(items) {
+
+			// need to update
+			for _, tmpItem := range items {
+
+				item, itemErr := cli.updateObjectAttribute(&tmpItem, jsObjAttr.Get(keyIdx), defErr)
+				if nil != itemErr {
+					blog.Error("failed to reset the object attribute, error info is %s ", itemErr.Error())
+					errStr := defLang.Languagef("import_row_int_error_str", colIdx, itemErr.Error())
+					if failed, ok := subResult["update_failed"]; ok {
+						failedArr := failed.([]string)
+						failedArr = append(failedArr, errStr)
+						subResult["update_failed"] = failedArr
+					} else {
+						subResult["update_failed"] = []string{
+							errStr,
+						}
+					}
+					result[objID] = subResult
+					continue
+				}
+
+				itemVal, _ := json.Marshal(item)
+				blog.Debug("the new attribute:%s", string(itemVal))
+				if updateErr := cli.mgr.UpdateObjectAtt(forward, item.ID, itemVal, defErr); nil != updateErr {
+					blog.Error("failed to update the object attribute, error info is %s", updateErr.Error())
+					errStr := defLang.Languagef("import_row_int_error_str", colIdx, updateErr.Error())
+					if failed, ok := subResult["update_failed"]; ok {
+						failedArr := failed.([]string)
+						failedArr = append(failedArr, errStr)
+						subResult["update_failed"] = failedArr
+					} else {
+						subResult["update_failed"] = []string{
+							errStr,
+						}
+					}
+					result[objID] = subResult
+					continue
+				}
+			}
+
+		} else {
+			// need to create
+			tmpItem := &api.ObjAttDes{}
+			tmpItem.ObjectID = objID
+			tmpItem.OwnerID = ownerID
+			item, itemErr := cli.updateObjectAttribute(tmpItem, jsObjAttr.Get(keyIdx), defErr)
+			if nil != itemErr {
+				blog.Error("failed to reset the object attribute, error info is %s ", itemErr.Error())
+				errStr := defLang.Languagef("import_row_int_error_str", colIdx, itemErr.Error())
+				if failed, ok := subResult["insert_failed"]; ok {
+					failedArr := failed.([]string)
+					failedArr = append(failedArr, errStr)
+					subResult["insert_failed"] = failedArr
+				} else {
+					subResult["insert_failed"] = []string{
+						errStr,
+					}
+				}
+				result[objID] = subResult
+				continue
+			}
+
+			if _, insertErr := cli.mgr.CreateObjectAtt(forward, *item, defErr); nil != insertErr {
+				blog.Error("failed to create the object attribute, error info is %s", insertErr.Error())
+				errStr := defLang.Languagef("import_row_int_error_str", colIdx, insertErr.Error())
+				if failed, ok := subResult["insert_failed"]; ok {
+					failedArr := failed.([]string)
+					failedArr = append(failedArr, errStr)
+					subResult["insert_failed"] = failedArr
+				} else {
+					subResult["insert_failed"] = []string{
+						errStr,
+					}
+				}
+				result[objID] = subResult
+				continue
+			}
+
+		} // end else  create attribute
+
+		if failed, ok := subResult["success"]; ok {
+			failedArr := failed.([]string)
+			failedArr = append(failedArr, keyIdx)
+			subResult["success"] = failedArr
+		} else {
+			subResult["success"] = []string{
+				keyIdx,
+			}
+		}
+
+		result[objID] = subResult
+
+	} // end foreach objid
+
+	return result, nil
+}
+
+func (cli *objectAction) setObject(forward *api.ForwardParam, ownerID, objID string, js *simplejson.Json, objItems []api.ObjDes, result map[string]interface{}, defErr errors.DefaultCCErrorIf, defLang language.DefaultCCLanguageIf) (map[string]interface{}, error) {
+
+	jsObjMeta := js.Get(objID).Get("meta")
+	metaData, err := jsObjMeta.MarshalJSON()
+	if nil != err {
+		return result, defErr.Error(common.CCErrCommJSONMarshalFailed)
+	}
+
+	// update the object
+	for _, obj := range objItems {
+
+		//obj.ID
+		err := cli.mgr.UpdateObject(forward, obj.ID, metaData, defErr)
+		if nil != err {
+			return result, err
+		}
+	}
+
+	_, err = cli.mgr.CreateObject(forward, metaData, defErr)
+	if nil != err {
+		return result, err
+	}
+
+	return result, nil
+}
+
 // CreateObjectBatch batch to create the object attributes
 func (cli *objectAction) CreateObjectBatch(req *restful.Request, resp *restful.Response) {
 	blog.Info("batch to create objectatt information")
@@ -320,7 +591,8 @@ func (cli *objectAction) CreateObjectBatch(req *restful.Request, resp *restful.R
 			condition[common.BKObjIDField] = objID
 
 			conditionVal, _ := json.Marshal(condition)
-			if items, err := cli.mgr.SelectObject(forward, conditionVal, defErr); nil != err {
+			items, err := cli.mgr.SelectObject(forward, conditionVal, defErr)
+			if nil != err {
 				blog.Error("failed to search, the error info is :%s", err.Error())
 				subResult["errors"] = fmt.Sprintf("the object(%s) is invalid", objID)
 				result[objID] = subResult
@@ -333,245 +605,17 @@ func (cli *objectAction) CreateObjectBatch(req *restful.Request, resp *restful.R
 				continue
 			}
 
-			// update the object attribute
-			conditionAtt := map[string]interface{}{}
-			jsObjAttr := js.Get(objID).Get("attr")
-			attrMap, mapErr := jsObjAttr.Map()
-			if nil != mapErr {
-				blog.Error("can not convert to map, error info is %s", mapErr.Error())
-				subResult["errors"] = defErr.Errorf(common.CCErrCommParamsLostField, "attr")
-				result[objID] = subResult
-				continue
+			// set the object
+			result, err := cli.setObject(forward, ownerID, objID, js, items, result, defErr, defLang)
+			if nil != err {
+				return http.StatusBadRequest, result, err
 			}
 
-			for keyIdx := range attrMap {
-
-				colIdx, _ := strconv.Atoi(keyIdx)
-
-				// check group name
-				propertyGroupName, err := jsObjAttr.Get(keyIdx).Get("bk_property_group_name").String()
-				jsObjAttr.Get(keyIdx).Del("bk_property_group_name")
-				if nil != err {
-					blog.Error("failed to parse the bk_property_group_name, error info is %s", err.Error())
-					errStr := defLang.Languagef("import_row_int_error_str", colIdx, defErr.Errorf(common.CCErrCommParamsNeedString, "bk_property_group_name"))
-					if failed, ok := subResult["insert_failed"]; ok {
-						failedArr := failed.([]string)
-						failedArr = append(failedArr, errStr)
-						subResult["insert_failed"] = failedArr
-					} else {
-						subResult["insert_failed"] = []string{
-							errStr,
-						}
-					}
-					result[objID] = subResult
-					continue
-				}
-
-				// check group name
-				if 0 == len(propertyGroupName) {
-					jsObjAttr.Get(keyIdx).Set("bk_property_group", "default") // set default, if set nothing
-				} else {
-					data := map[string]interface{}{
-						common.BKOwnerIDField: ownerID,
-						common.BKObjIDField:   objID,
-						"bk_group_name":       propertyGroupName,
-					}
-					dataStr, _ := json.Marshal(data)
-					grps, err := cli.mgr.SelectPropertyGroupByObjectID(forward, ownerID, objID, dataStr, defErr)
-					if nil != err {
-						blog.Error("failed to search the group, error info is %s", err.Error())
-						errStr := defLang.Languagef("import_row_int_error_str", colIdx, defErr.Errorf(common.CCErrCommParamsNeedString, "bk_property_group_name"))
-						if failed, ok := subResult["insert_failed"]; ok {
-							failedArr := failed.([]string)
-							failedArr = append(failedArr, errStr)
-							subResult["insert_failed"] = failedArr
-						} else {
-							subResult["insert_failed"] = []string{
-								errStr,
-							}
-						}
-						result[objID] = subResult
-						continue
-					}
-
-					if 0 != len(grps) {
-						jsObjAttr.Get(keyIdx).Set("bk_property_group", grps[0].GroupID) // only one group, not any more
-					} else {
-						grp := api.ObjAttGroupDes{}
-						grp.ObjectID = objID
-						grp.OwnerID = ownerID
-						grp.GroupID = xid.New().String()
-						grp.GroupName = propertyGroupName
-						grpStr, _ := json.Marshal(grp)
-						if _, err := cli.mgr.CreateObjectGroup(forward, grpStr, defErr); nil != err {
-							blog.Error("failed to create the group, error info is %s", err.Error())
-							errStr := defLang.Languagef("import_row_int_error_str", colIdx, defErr.Error(common.CCErrTopoObjectGroupCreateFailed))
-							if failed, ok := subResult["insert_failed"]; ok {
-								failedArr := failed.([]string)
-								failedArr = append(failedArr, errStr)
-								subResult["insert_failed"] = failedArr
-							} else {
-								subResult["insert_failed"] = []string{
-									errStr,
-								}
-							}
-							result[objID] = subResult
-							continue
-						}
-
-						jsObjAttr.Get(keyIdx).Set("bk_property_group", grp.GroupID) // only one group, not any more
-					}
-
-				}
-
-				// check base attribute
-				propertyID, err := jsObjAttr.Get(keyIdx).Get("bk_property_id").String()
-				if 0 == len(propertyID) {
-					blog.Error("not set the bk_property_id")
-					errStr := defLang.Languagef("import_row_int_error_str", colIdx, defErr.Errorf(common.CCErrCommParamsNeedSet, "bk_property_id"))
-					if failed, ok := subResult["insert_failed"]; ok {
-						failedArr := failed.([]string)
-						failedArr = append(failedArr, errStr)
-						subResult["insert_failed"] = failedArr
-					} else {
-						subResult["insert_failed"] = []string{
-							errStr,
-						}
-					}
-					result[objID] = subResult
-					continue
-				}
-				if nil != err {
-					blog.Error("failed to parse the bk_property_id, error info is %s", err.Error())
-					errStr := defLang.Languagef("import_row_int_error_str", colIdx, defErr.Errorf(common.CCErrCommParamsNeedString, "bk_property_id"))
-					if failed, ok := subResult["insert_failed"]; ok {
-						failedArr := failed.([]string)
-						failedArr = append(failedArr, errStr)
-						subResult["insert_failed"] = failedArr
-					} else {
-						subResult["insert_failed"] = []string{
-							errStr,
-						}
-					}
-					result[objID] = subResult
-					continue
-				}
-
-				// check the property id
-				conditionAtt[common.BKOwnerIDField] = ownerID
-				conditionAtt[common.BKObjIDField] = objID
-				conditionAtt["bk_property_id"] = propertyID
-
-				conditionAttVal, _ := json.Marshal(conditionAtt)
-				if items, err := cli.mgr.SelectObjectAtt(forward, conditionAttVal, defErr); nil != err {
-					blog.Error("failed to search the object attribute, the condition is %+v, error info is %s", conditionAtt, err.Error())
-					errStr := defLang.Languagef("import_row_int_error_str", colIdx, err.Error())
-					if failed, ok := subResult["insert_failed"]; ok {
-						failedArr := failed.([]string)
-						failedArr = append(failedArr, errStr)
-						subResult["insert_failed"] = failedArr
-					} else {
-						subResult["insert_failed"] = []string{
-							errStr,
-						}
-					}
-					result[objID] = subResult
-					continue
-
-				} else if 0 != len(items) {
-
-					// need to update
-					for _, tmpItem := range items {
-
-						item, itemErr := cli.updateObjectAttribute(&tmpItem, jsObjAttr.Get(keyIdx), defErr)
-						if nil != itemErr {
-							blog.Error("failed to reset the object attribute, error info is %s ", itemErr.Error())
-							errStr := defLang.Languagef("import_row_int_error_str", colIdx, itemErr.Error())
-							if failed, ok := subResult["update_failed"]; ok {
-								failedArr := failed.([]string)
-								failedArr = append(failedArr, errStr)
-								subResult["update_failed"] = failedArr
-							} else {
-								subResult["update_failed"] = []string{
-									errStr,
-								}
-							}
-							result[objID] = subResult
-							continue
-						}
-
-						itemVal, _ := json.Marshal(item)
-						blog.Debug("the new attribute:%s", string(itemVal))
-						if updateErr := cli.mgr.UpdateObjectAtt(forward, item.ID, itemVal, defErr); nil != updateErr {
-							blog.Error("failed to update the object attribute, error info is %s", updateErr.Error())
-							errStr := defLang.Languagef("import_row_int_error_str", colIdx, updateErr.Error())
-							if failed, ok := subResult["update_failed"]; ok {
-								failedArr := failed.([]string)
-								failedArr = append(failedArr, errStr)
-								subResult["update_failed"] = failedArr
-							} else {
-								subResult["update_failed"] = []string{
-									errStr,
-								}
-							}
-							result[objID] = subResult
-							continue
-						}
-					}
-
-				} else {
-					// need to create
-					tmpItem := &api.ObjAttDes{}
-					tmpItem.ObjectID = objID
-					tmpItem.OwnerID = ownerID
-					item, itemErr := cli.updateObjectAttribute(tmpItem, jsObjAttr.Get(keyIdx), defErr)
-					if nil != itemErr {
-						blog.Error("failed to reset the object attribute, error info is %s ", itemErr.Error())
-						errStr := defLang.Languagef("import_row_int_error_str", colIdx, itemErr.Error())
-						if failed, ok := subResult["insert_failed"]; ok {
-							failedArr := failed.([]string)
-							failedArr = append(failedArr, errStr)
-							subResult["insert_failed"] = failedArr
-						} else {
-							subResult["insert_failed"] = []string{
-								errStr,
-							}
-						}
-						result[objID] = subResult
-						continue
-					}
-
-					if _, insertErr := cli.mgr.CreateObjectAtt(forward, *item, defErr); nil != insertErr {
-						blog.Error("failed to create the object attribute, error info is %s", insertErr.Error())
-						errStr := defLang.Languagef("import_row_int_error_str", colIdx, insertErr.Error())
-						if failed, ok := subResult["insert_failed"]; ok {
-							failedArr := failed.([]string)
-							failedArr = append(failedArr, errStr)
-							subResult["insert_failed"] = failedArr
-						} else {
-							subResult["insert_failed"] = []string{
-								errStr,
-							}
-						}
-						result[objID] = subResult
-						continue
-					}
-
-				} // end else  create attribute
-
-				if failed, ok := subResult["success"]; ok {
-					failedArr := failed.([]string)
-					failedArr = append(failedArr, keyIdx)
-					subResult["success"] = failedArr
-				} else {
-					subResult["success"] = []string{
-						keyIdx,
-					}
-				}
-
-				result[objID] = subResult
-
-			} // end foreach objid
+			// set the object attribute
+			result, err = cli.setObjectAttribute(forward, ownerID, objID, js, result, defErr, defLang)
+			if nil != err {
+				return http.StatusBadRequest, result, err
+			}
 		}
 
 		return http.StatusOK, result, nil
