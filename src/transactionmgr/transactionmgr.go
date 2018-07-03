@@ -10,9 +10,36 @@
  * limitations under the License.
  */
 
-package transaction
+package transactionmgr
 
-// Transaction the transaction interface methods
-type Transaction interface {
-    
+import (
+	"configcenter/src/transactionmgr/transaction"
+)
+
+// TransactionMgr transaction manager
+type TransactionMgr interface {
+	GetTransaction() transaction.Transaction
+	Suspend(tran transaction.Transaction) error
+	Resume(tran transaction.Transaction) error
+}
+
+// New create a new transaction manager
+func New() TransactionMgr {
+	return &transactionmgr{}
+}
+
+type transactionmgr struct {
+	stat *statistics
+}
+
+func (t *transactionmgr) GetTransaction() transaction.Transaction {
+	return nil
+}
+
+func (t *transactionmgr) Suspend(tran transaction.Transaction) error {
+	return nil
+}
+
+func (t *transactionmgr) Resume(tran transaction.Transaction) error {
+	return nil
 }
