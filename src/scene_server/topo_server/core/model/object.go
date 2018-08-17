@@ -555,6 +555,7 @@ func (o *object) Update(data frtypes.MapStr) error {
 			return o.params.Err.Error(rsp.Code)
 		}
 	}
+	o.Parse(data)
 	return nil
 }
 

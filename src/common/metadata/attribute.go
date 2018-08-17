@@ -16,6 +16,7 @@ import (
 	"time"
 
 	types "configcenter/src/common/mapstr"
+	"configcenter/src/common/util"
 )
 
 const (
@@ -68,6 +69,11 @@ type Attribute struct {
 	Creator           string      `field:"creator" json:"creator" bson:"creator"`
 	CreateTime        *time.Time  `json:"create_time" bson:"creaet_time"`
 	LastTime          *time.Time  `json:"last_time" bson:"last_time"`
+}
+
+// IsAssociationType check the attribute field type
+func (cli *Attribute) IsAssociationType() bool {
+	return util.IsAssocateProperty(cli.PropertyType)
 }
 
 // Parse load the data from mapstr attribute into attribute instance

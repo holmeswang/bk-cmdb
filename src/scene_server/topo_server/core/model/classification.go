@@ -197,7 +197,7 @@ func (cli *classification) Update(data frtypes.MapStr) error {
 
 		cli.cls = item
 	}
-
+	cli.Parse(data)
 	return nil
 }
 

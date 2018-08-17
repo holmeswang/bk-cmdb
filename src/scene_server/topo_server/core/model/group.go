@@ -178,6 +178,8 @@ func (g *group) Update(data frtypes.MapStr) error {
 		g.grp.ID = grpItem.ID
 
 	}
+
+	g.Parse(data)
 	return nil
 }
 

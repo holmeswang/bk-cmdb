@@ -16,6 +16,8 @@ import (
 	"fmt"
 	"strconv"
 
+	"configcenter/src/common"
+
 	"github.com/rs/xid"
 
 	"configcenter/src/common/blog"
@@ -75,6 +77,45 @@ func (o *object) getGroup(params types.ContextParams, objID, propertyGroupName s
 	return newGrp, err
 }
 
+func (o *object) setObjectAttribute(params types.ContextParams, objID string, idx int64, targetAttr *metadata.Attribute, result frtypes.MapStr) ([]model.Attribute, frtypes.MapStr) {
+
+	// find group
+	grp, err := o.getGroup(params, objID, targetAttr.PropertyGroupName)
+	if nil != err {
+		return nil, setErrors(result, objID, "errors", params.Lang.Languagef("import_row_int_error_str", idx, err))
+	}
+	targetAttr.PropertyGroup = grp.GetID()
+
+	// create or update the attribute
+	attrCond := condition.CreateCondition()
+	attrCond.Field(metadata.AttributeFieldSupplierAccount).Eq(params.SupplierAccount)
+	attrCond.Field(metadata.AttributeFieldObjectID).Eq(objID)
+	attrCond.Field(metadata.AttributeFieldPropertyID).Eq(targetAttr.PropertyID)
+	attrs, err := o.attr.FindObjectAttribute(params, attrCond)
+	if nil != err {
+		return nil, setErrors(result, objID, "insert_failed", params.Lang.Languagef("import_row_int_error_str", idx, err.Error()))
+	}
+
+	if 0 == len(attrs) {
+
+		newAttr := o.modelFactory.CreateAttribute(params)
+		if err = newAttr.Save(targetAttr.ToMapStr()); nil != err {
+			return nil, setErrors(result, objID, "insert_failed", params.Lang.Languagef("import_row_int_error_str", idx, err.Error()))
+		}
+
+	}
+
+	for _, newAttr := range attrs {
+
+		if err := newAttr.Update(targetAttr.ToMapStr()); nil != err {
+			return nil, setErrors(result, objID, "update_failed", params.Lang.Languagef("import_row_int_error_str", idx, err.Error()))
+		}
+
+	}
+
+	return attrs, setErrors(result, objID, "success", strconv.FormatInt(idx, 10))
+}
+
 func (o *object) CreateObjectBatch(params types.ContextParams, data frtypes.MapStr) (frtypes.MapStr, error) {
 
 	inputData := map[string]ImportObjectData{}
@@ -83,6 +124,7 @@ func (o *object) CreateObjectBatch(params types.ContextParams, data frtypes.MapS
 	}
 
 	result := frtypes.New()
+
 	for objID, inputData := range inputData {
 
 		if err := o.IsValidObject(params, objID); nil != err {
@@ -90,10 +132,10 @@ func (o *object) CreateObjectBatch(params types.ContextParams, data frtypes.MapS
 			continue
 		}
 
-		// update the object's attribute
+		var newAttrs []model.Attribute
 		for idx, attr := range inputData.Attr {
 
-			metaAttr := metadata.Attribute{}
+			metaAttr := &metadata.Attribute{}
 			targetAttr, err := metaAttr.Parse(attr)
 			targetAttr.OwnerID = params.SupplierAccount
 			targetAttr.ObjectID = objID
@@ -107,56 +149,50 @@ func (o *object) CreateObjectBatch(params types.ContextParams, data frtypes.MapS
 				targetAttr.PropertyGroup = "Default"
 			}
 
-			// find group
-			grp, err := o.getGroup(params, objID, targetAttr.PropertyGroupName)
-			if nil != err {
-				result = setErrors(result, objID, "errors", params.Lang.Languagef("import_row_int_error_str", idx, err))
-				continue
-			}
-			targetAttr.PropertyGroup = grp.GetID()
+			var asstObjID string
+			if metaAttr.IsAssociationType() {
 
-			// create or update the attribute
-			attrID, err := attr.String(metadata.AttributeFieldPropertyID)
-			if nil != err {
-				result = setErrors(result, objID, "insert_failed", params.Lang.Languagef("import_row_int_error_str", idx, err.Error()))
-				continue
-			}
-			attrCond := condition.CreateCondition()
-			attrCond.Field(metadata.AttributeFieldSupplierAccount).Eq(params.SupplierAccount)
-			attrCond.Field(metadata.AttributeFieldObjectID).Eq(objID)
-			attrCond.Field(metadata.AttributeFieldPropertyID).Eq(attrID)
-			attrs, err := o.attr.FindObjectAttribute(params, attrCond)
-			if nil != err {
-				result = setErrors(result, objID, "insert_failed", params.Lang.Languagef("import_row_int_error_str", idx, err.Error()))
-				continue
+				asstObjID, err = attr.String(metadata.AssociationFieldAssociationObjectID)
+				if nil != err {
+					result = setErrors(result, objID, "errors", params.Lang.Languagef("import_row_int_error_str", idx, err.Error()))
+				}
+
+				if 0 == len(asstObjID) {
+					errStr := params.Lang.Languagef("import_row_int_error_str", idx, params.Err.Errorf(common.CCErrCommParamsNeedSet, metadata.AssociationFieldAssociationObjectID).Error())
+					result = setErrors(result, objID, "errors", errStr)
+					continue
+				}
 			}
 
-			if 0 == len(attrs) {
+			// set object's attribute
+			newAttrs, result = o.setObjectAttribute(params, objID, idx, metaAttr, result)
 
-				newAttr := o.modelFactory.CreateAttribute(params)
-				if err = newAttr.Save(targetAttr.ToMapStr()); nil != err {
-					result = setErrors(result, objID, "insert_failed", params.Lang.Languagef("import_row_int_error_str", idx, err.Error()))
+			// set object's association
+			for _, subNewAttr := range newAttrs {
+
+				if !subNewAttr.IsAssociationType() {
 					continue
 				}
 
-			}
+				err := o.asst.CreateCommonAssociation(params, &metadata.Association{
+					ObjectID:    objID,
+					ObjectAttID: subNewAttr.GetID(),
+					AsstObjID:   asstObjID,
+					OwnerID:     params.SupplierAccount,
+				})
 
-			for _, newAttr := range attrs {
-
-				if err := newAttr.Update(targetAttr.ToMapStr()); nil != err {
-					result = setErrors(result, objID, "update_failed", params.Lang.Languagef("import_row_int_error_str", idx, err.Error()))
-					continue
+				if nil != err {
+					errStr := params.Lang.Languagef("import_row_int_error_str", idx, err.Error())
+					result = setErrors(result, objID, "errors", errStr)
 				}
-
 			}
-
-			result = setErrors(result, objID, "success", strconv.FormatInt(idx, 10))
 		}
 
 	}
 
 	return result, nil
 }
+
 func (o *object) FindObjectBatch(params types.ContextParams, data frtypes.MapStr) (frtypes.MapStr, error) {
 
 	cond := &ExportObjectCondition{}
@@ -167,6 +203,7 @@ func (o *object) FindObjectBatch(params types.ContextParams, data frtypes.MapStr
 	result := frtypes.New()
 
 	for _, objID := range cond.ObjIDS {
+
 		obj, err := o.FindSingleObject(params, objID)
 		if nil != err {
 			return nil, err
@@ -177,8 +214,22 @@ func (o *object) FindObjectBatch(params types.ContextParams, data frtypes.MapStr
 			return nil, err
 		}
 
+		asstInfo := frtypes.New()
+		for _, attr := range attrs {
+			if !attr.IsAssociationType() {
+				continue
+			}
+
+			asstObjs, err := obj.GetChildObjectByFieldID(attr.GetID())
+			if nil != err {
+				return nil, err
+			}
+			asstInfo.Set(attr.GetID(), asstObjs)
+		}
+
 		result.Set(objID, frtypes.MapStr{
-			"attr": attrs,
+			"attr":  attrs,
+			"assts": asstInfo,
 		})
 	}
 

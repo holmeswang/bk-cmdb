@@ -17,14 +17,13 @@ import (
 	"encoding/json"
 	"io"
 
-	"configcenter/src/common/util"
-
 	"configcenter/src/apimachinery"
 	"configcenter/src/common"
 	"configcenter/src/common/blog"
 	"configcenter/src/common/condition"
 	frtypes "configcenter/src/common/mapstr"
 	metadata "configcenter/src/common/metadata"
+	"configcenter/src/common/util"
 	"configcenter/src/scene_server/topo_server/core/types"
 )
 
@@ -119,7 +118,7 @@ func (a *attribute) Origin() metadata.Attribute {
 }
 
 func (a *attribute) IsAssociationType() bool {
-	return util.IsAssocateProperty(a.attr.PropertyType)
+	return a.attr.IsAssociationType()
 }
 
 func (a *attribute) searchObjects(objID string) ([]metadata.Object, error) {
@@ -467,6 +466,8 @@ func (a *attribute) Update(data frtypes.MapStr) error {
 		blog.Errorf("failed to update the object attribute(%s), error info is %s", a.attr.PropertyID, rsp.ErrMsg)
 		return a.params.Err.Error(common.CCErrTopoObjectAttributeUpdateFailed)
 	}
+
+	a.Parse(data)
 
 	return nil
 }

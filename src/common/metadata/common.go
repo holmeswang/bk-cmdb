@@ -83,7 +83,7 @@ type QueryInput struct {
 	Sort      string      `json:"sort,omitempty"`
 }
 
-//ConvTime ??????????cc_type key ??????time.Time
+//ConvTime to convert the value of the cc_time_type field in the query condition
 func (o *QueryInput) ConvTime() error {
 	conds, ok := o.Condition.(map[string]interface{})
 	if true != ok && nil != conds {
@@ -100,7 +100,6 @@ func (o *QueryInput) ConvTime() error {
 	return nil
 }
 
-//convTimeItem ????????,??????????cc_time_type
 func (o *QueryInput) convTimeItem(item interface{}) (interface{}, error) {
 
 	switch item.(type) {
@@ -149,7 +148,7 @@ func (o *QueryInput) convTimeItem(item interface{}) (interface{}, error) {
 			item = arrItem
 		}
 	case []interface{}:
-		//??????????????
+
 		arrItem, ok := item.([]interface{})
 		if true == ok {
 			for index, value := range arrItem {
