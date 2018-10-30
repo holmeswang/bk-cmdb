@@ -15,8 +15,8 @@ package service
 import (
 	"fmt"
 
-	"github.com/gin-gonic/contrib/sessions"
 	"github.com/gin-gonic/gin"
+	"github.com/uriwang/contrib/sessions"
 
 	"configcenter/src/common"
 	"configcenter/src/common/blog"
